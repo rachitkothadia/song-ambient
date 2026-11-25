@@ -1,0 +1,36 @@
+name: macOS build and checks
+
+on:
+  push:
+    branches: [feature/multiple-audio-sources]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, xcode-27]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Select Xcode 27.2
+        if: matrix.runner == 'xcode-27'
+        run: echo 'DEVELOPER_DIR=/Applications/Xcode_27.2.app/Contents/Developer' >> "$GITHUB_ENV"
+      - name: Build the checks in Xcode Release
+        if: matrix.runner == 'xcode-27'
+        run: |
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          xcodebuild -scheme SongAmbientChecks -configuration Release -destination 'platform=macOS' build CODE_SIGNING_ALLOWED=NO
+      - name: Build and sign the app
+        run: ./script/build_and_run.sh --build
+      - name: Run regressions
+        run: swift run -c release SongAmbientChecks --allow-missing-metal
+      - name: Verify app signature
+        run: codesign --verify --strict dist/SongAmbient.app

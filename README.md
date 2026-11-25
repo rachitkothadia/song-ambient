@@ -6,7 +6,7 @@
 
 ### Your music. Around your screen.
 
-**Free, open-source Spotify edge lighting and animated lyrics for macOS.**
+**Free, open-source audio-reactive edge lighting and animated lyrics for macOS.**
 
 An independent, MIT-licensed alternative to Lumn. No app subscription. No activation key.
 
@@ -15,7 +15,7 @@ An independent, MIT-licensed alternative to Lumn. No app subscription. No activa
 [![Native Swift](https://img.shields.io/badge/native-Swift%20%2B%20Metal-f05138.svg)](Package.swift)
 [![Download](https://img.shields.io/github/v/release/rachitkothadia/song-ambient?label=download&color=8bdaff)](https://github.com/rachitkothadia/song-ambient/releases/latest)
 
-[**Download for Apple silicon**](https://github.com/rachitkothadia/song-ambient/releases/latest) · [Build from source](#build-from-source) · [Report a bug](https://github.com/rachitkothadia/song-ambient/issues)
+[**Upstream Spotify release for Apple silicon**](https://github.com/rachitkothadia/song-ambient/releases/latest) · [Build from source](#build-from-source) · [Report a bug](https://github.com/rachitkothadia/song-ambient/issues)
 
 <img src="docs/hero.svg" width="100%" alt="Illustration: a glowing music-reactive desktop border surrounding a connected constellation of individual lyric words">
 
@@ -25,9 +25,9 @@ An independent, MIT-licensed alternative to Lumn. No app subscription. No activa
 
 ## Make your desktop part of the song
 
-A bass hit should feel like a bass hit. Song Ambient analyzes Spotify audio on your Mac and turns it into light around your display. Open Lyrics Studio and let individual words fly, branch, bend, or connect into a constellation.
+A bass hit should feel like a bass hit. Song Ambient analyzes audio from the source you choose on your Mac and turns it into light around your display. Open Lyrics Studio and let individual words fly, branch, bend, or connect into a constellation.
 
-- **Spotify only.** A process inclusion tap captures Spotify and its helpers. WhatsApp, browser videos and other apps cannot drive the display rim. Paused or silent Spotify turns the live rim off.
+- Choose **System Audio**, **Apple Music**, or **Spotify** in Studio → Settings. All three feed the same audio analysis and six edge effects.
 - **Six border effects.** Aurora, Comet, **Waves**, Spectrum, Ribbons and Minimal have different silhouettes. Waves is back, with traveling crests and bass-driven bounce.
 - **Bass with a little spring.** Separate bass, mid and treble analysis, sixteen frequency bands, onset detection and damped rebound drive the lighting.
 - **Nine lyric looks.** Ship, Fisheye, Visual, Fisheye Visual, Codestyle, Codestyle Visual, Branches, Web and Constellation render individual words.
@@ -49,15 +49,28 @@ A bass hit should feel like a bass hit. Song Ambient analyzes Spotify audio on y
 
 ## Get started
 
-1. Download `SongAmbient-2.1.1-macOS-arm64.zip` from [Releases](https://github.com/rachitkothadia/song-ambient/releases/latest).
-2. Unzip it, move `SongAmbient.app` into Applications, then open it.
-3. Open **Spotify desktop** and play a track. Song Ambient connects and starts music sync automatically unless you disabled these settings.
-4. Allow **Automation → Spotify** and **System Audio Recording** when macOS asks. The OS permission name is broad; the app's tap includes only Spotify processes.
-5. Choose an edge effect, or open **Lyrics Studio** and launch the full-screen stage.
+1. [Build from source](#build-from-source) to use all three sources. Move the resulting `dist/SongAmbient.app` into Applications if you want to keep it there.
+2. Open Song Ambient and choose **Studio → Settings → Audio Source**. Spotify is the default when no selection is saved.
+3. Allow **System Audio Recording** when macOS prompts. If capture is off, click **Enable**. Choose **Retry** after granting access in **System Settings → Privacy & Security → Screen & System Audio Recording**.
+4. For **Apple Music** or **Spotify**, open the matching desktop player and click **Connect** if automatic connection is off. Allow the selected player under **Privacy & Security → Automation** for track information and controls.
 
-Requires **macOS 15 or newer** and Spotify desktop. The downloadable build is **Apple silicon only**, ad-hoc signed and **not Apple-notarized**. macOS may block a downloaded build: after verifying its source, use **System Settings → Privacy & Security → Open Anyway**, or build locally. No need to disable Gatekeeper globally.
+Requires **macOS 15 or newer**. The upstream 2.1.1 download is an ad-hoc-signed Apple silicon build with Spotify support. This branch uses the same local build and signing script.
 
 Use **H** to hide/show stage controls and **Escape** to leave full screen. The menu bar orbit reopens the studio after you close it. Quit from its menu to stop the app completely.
+
+## Audio sources
+
+| Source | Audio capture | Playback information, artwork and controls |
+| --- | --- | --- |
+| **System Audio** | A global stereo Core Audio tap captures app output including browsers, games, local players and Spotify or Music. Lighting follows audio activity and falls quiet using the existing release envelopes. | Uses the saved custom palette. Track metadata and transport controls are unavailable for the system mix. |
+| **Apple Music** | A stereo tap includes Music.app and Music-specific processes. Song Ambient checks for process changes so it can reconnect after Music restarts. | Music’s local Automation interface provides title, artist, album, elapsed time, duration and transport controls. When Music exposes artwork, the existing album palette uses it. The saved custom palette is the fallback. |
+| **Spotify** | A stereo tap includes Spotify and its helpers. The rim requires connected, playing Spotify and non-silent PCM. | The existing Spotify Automation, artwork and lyric timing integrations remain available. |
+
+Switching sources while capture is enabled reconfigures the tap live. The tap stays unmuted and separate from the normal output device. Changes to the default output or tap format trigger a rebuild. Capture requires no microphone, virtual driver or kernel extension.
+
+Music’s ability to expose track data, artwork and PCM varies by track and macOS version. Music can report playback while the tap is silent, including when macOS restricts protected audio. The studio shows a capture hint in that case. Capture follows the audio macOS makes available through its public tap API. AirPods and other Bluetooth devices should be included in the output-switching checks below.
+
+A denied Music Automation permission leaves audio-driven lighting available. Spotify requires Automation for its existing playback gate. Apple Music transport and metadata use the installed Music app, with no MusicKit token or added service.
 
 ## Honest timing, better words
 
@@ -76,19 +89,19 @@ Hindi romanization is approximate. LRCLIB coverage and recording matches vary. A
 ## Privacy and network use
 
 - Audio analysis stays on your Mac. Audio is not recorded to disk or uploaded; the microphone is not captured.
-- Spotify playback information and controls use its local desktop Apple Events interface. No developer API key or Spotify OAuth setup is needed.
+- Spotify and Music playback information and controls use their local Apple Events interfaces.
 - Automatic lyric lookup sends track title, artist, album and duration to **[LRCLIB](https://lrclib.net)**. Turn off automatic fetching in Settings to stop automatic lookups. Successful results and recording choices are cached locally under `~/Library/Application Support/SongAmbient/Lyrics`.
-- Album artwork loads from the HTTPS artwork URL supplied by Spotify. Optional animated artwork searches Apple's public catalog using track details; availability is not guaranteed.
+- Static artwork comes from Music’s local scripting interface or the HTTPS artwork URL supplied by Spotify. Optional animated artwork searches Apple's public catalog using track details; availability is not guaranteed.
 - Preferences stay in macOS UserDefaults. There is no app account, analytics service or activation server.
 
-The display rim is gated by playing, connected, non-silent Spotify. In-app effect previews and an explicitly requested lighting preview can still run while Spotify is stopped.
+In-app effect previews and the display lighting preview can run independently of live capture.
 
 ## Build from source
 
 Install Apple's command-line developer tools or Xcode with **Swift 6 or newer**. A network connection is needed on the first build to resolve the pinned Yams dependency.
 
 ```sh
-git clone https://github.com/rachitkothadia/song-ambient.git
+git clone --branch feature/multiple-audio-sources https://github.com/ACOPS1206/song-ambient.git
 cd song-ambient
 ./script/build_and_run.sh
 ```
@@ -105,18 +118,29 @@ The script builds for the host architecture. Intel builds are possible from sour
 
 ```sh
 swift run SongAmbientChecks
-# Also report selected Spotify processes and write six GPU previews:
+# Report app-specific Core Audio processes and write six GPU previews:
 swift run SongAmbientChecks --spotify-route --previews /tmp/songambient-edge-previews
+swift run SongAmbientChecks --apple-music-route
+# Permit a headless host to skip GPU checks if Metal is unavailable:
+swift run SongAmbientChecks --allow-missing-metal
 # Inspect UI without connection autostart or desktop overlays:
 ./script/build_and_run.sh --ui-check
 ```
 
-Checks cover line/word timestamp precision, romanization, gaps and seeks, one-word presentation, random constellation geometry, Spotify-only selection and lighting gates, bass/onset/spring behavior, and actual Metal rendering with transparent centers and distinct effect output. GPU checks need a Metal-capable Mac; a headless environment without a Metal device cannot run them.
+Checks cover line/word timestamp precision, romanization, gaps and seeks, one-word presentation, random constellation geometry, source restoration and isolation, lighting gates, PCM parity, bass/onset/spring behavior, and actual Metal rendering with transparent centers and distinct effect output. GPU checks need a Metal-capable Mac; a headless environment without a Metal device cannot run them.
+
+### Live macOS verification
+
+1. In **Spotify**, play, pause, seek and skip tracks. Verify metadata, artwork, lyrics and that a separate browser tab cannot activate the rim while Spotify is paused.
+2. In **Apple Music**, play a local file, then a streamed song. Verify that Music alone drives the rim, then test artwork palette, elapsed time, duration, pause, previous and next. Quit and reopen Music while leaving Song Ambient running. Test with Music Automation denied and re-enabled.
+3. In **System Audio**, with Spotify closed or absent, play a browser video and a second app. Check output volume, silence and resumed playback. Switch between the built-in output and AirPods while audio is playing. Check the same test in full screen.
+4. Cycle between all three sources while audio plays. Verify the previous source stops driving the rim, stop and re-enable capture, then quit and relaunch to verify that the source persists. Deny and re-enable system audio recording. To inspect resource cleanup, watch for Song Ambient’s private taps and aggregate devices in a Core Audio diagnostic tool during repeated switches and after quitting.
+5. Try all six effects using the same preset and playback. Run the checks on a Metal-capable Mac for GPU output. GitHub Actions covers the macOS build and automated checks when enabled on the fork.
 
 | Directory | Purpose |
 | --- | --- |
 | `Sources/AmbientCore` | Timing, word presentation, audio policy, beat processing and Metal shader source |
-| `Sources/SongAmbient` | SwiftUI/AppKit app, Spotify integration, audio capture, player and stage |
+| `Sources/SongAmbient` | SwiftUI/AppKit app, media integration, audio capture, player and stage |
 | `Checks` | Executable regression and GPU checks |
 | `Examples` | Authored word-timing fixture |
 | `Assets` | Original app icon, icon provenance and dependency notice |

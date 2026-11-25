@@ -35,9 +35,11 @@ struct MenuContent: View {
             Toggle("Keep screen awake in lyrics",isOn:$model.prefs.keepAwake)
             Toggle("Non-lockscreen lyric visibility",isOn:$model.prefs.desktopLyrics)
             Button("Preview lighting") { model.previewLighting() }
-            Button(model.music.connected ? "Refresh music connection" : "Connect Spotify") { model.music.connect() }
+            if model.audioSource.playerBundleID != nil {
+                Button("Connect \(model.audioSource.rawValue)") { model.music.connect() }
+            }
             Divider()
-            Button("Quit Song Ambient") { model.audio.stop(); NSApplication.shared.terminate(nil) }.keyboardShortcut("q")
+            Button("Quit Song Ambient") { NSApplication.shared.terminate(nil) }.keyboardShortcut("q")
         }.padding(16).frame(width: 350).preferredColorScheme(.dark)
     }
 }
@@ -50,5 +52,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    func applicationWillTerminate(_ notification: Notification) { model?.audio.stop() }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let model else { return .terminateNow }
+        model.audio.stop { NSApp.reply(toApplicationShouldTerminate: true) }
+        return .terminateLater
+    }
 }

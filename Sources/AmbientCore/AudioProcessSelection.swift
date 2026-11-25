@@ -1,12 +1,13 @@
 import CoreAudio
 import Foundation
 
-public struct SpotifyAudioProcess:Sendable{
+public struct AudioProcess:Sendable{
     public let id:AudioObjectID
     public let bundleID:String
 }
-public enum SpotifyProcessSelection{
-    public static func available()->[SpotifyAudioProcess]{
+public enum AudioProcessSelection{
+    public static func available(for source: AudioSource)->[AudioProcess]{
+        guard source != .systemAudio else { return [] }
         var address=AudioObjectPropertyAddress(mSelector:kAudioHardwarePropertyProcessObjectList,mScope:kAudioObjectPropertyScopeGlobal,mElement:kAudioObjectPropertyElementMain)
         var size:UInt32=0
         let system=AudioObjectID(kAudioObjectSystemObject)
@@ -19,7 +20,15 @@ public enum SpotifyProcessSelection{
             var value:Unmanaged<CFString>?,bytes=UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
             guard AudioObjectGetPropertyData(object,&property,0,nil,&bytes,&value)==noErr,let value else{return nil}
             let bundle=value.takeRetainedValue() as String
-            return SpotifyAudioPolicy.includes(bundleID:bundle) ? SpotifyAudioProcess(id:object,bundleID:bundle):nil
+            return source.includesProcess(bundleID:bundle) ? AudioProcess(id:object,bundleID:bundle):nil
         }.sorted{$0.id<$1.id}
+    }
+}
+
+public typealias SpotifyAudioProcess = AudioProcess
+
+public enum SpotifyProcessSelection {
+    public static func available() -> [SpotifyAudioProcess] {
+        AudioProcessSelection.available(for: .spotify)
     }
 }

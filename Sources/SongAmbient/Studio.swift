@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AmbientCore
 
 struct MainWindowView:View {
     @ObservedObject var model:AppModel
@@ -11,7 +12,7 @@ struct MainWindowView:View {
                 OrbitMark().foregroundStyle(LinearGradient(colors:[.cyan,.purple,.pink],startPoint:.topLeading,endPoint:.bottomTrailing)).frame(width:35,height:35)
                 VStack(alignment:.leading,spacing:3){Text("Song Ambient").font(.system(size:21,weight:.semibold,design:.rounded));Text("A little light. A whole new atmosphere.").font(.system(size:11)).foregroundStyle(.secondary)}
                 Spacer()
-                LiveStatus(music:music,audio:audio)
+                LiveStatus(model:model,music:music,audio:audio)
                 Toggle("Lighting",isOn:$model.prefs.enabled).toggleStyle(.switch).labelsHidden().help("Toggle edge lighting")
             }.padding(.horizontal,24).padding(.top,18).padding(.bottom,13)
             HStack(spacing:6){
@@ -25,7 +26,7 @@ struct MainWindowView:View {
                 switch model.selectedTab {
                 case .lighting: LightingPage(model:model,audio:audio,music:music)
                 case .lyrics: LyricsStudioPage(model:model,music:music,audio:audio,lyrics:model.lyrics)
-                case .settings: SettingsForm(model:model,music:music)
+                case .settings: SettingsForm(model:model,music:music,audio:audio)
                 }
             }.frame(maxWidth:.infinity,maxHeight:.infinity)
         }.frame(minWidth:760,minHeight:500)
@@ -35,10 +36,11 @@ struct MainWindowView:View {
 }
 
 private struct LiveStatus:View {
+    @ObservedObject var model:AppModel
     @ObservedObject var music:MusicWatcher
     @ObservedObject var audio:AudioCapture
     var body:some View{
-        HStack(spacing:7){Circle().fill(audio.running ? .mint:.gray).frame(width:6,height:6);Text(music.playing ? "Playing · \(music.source?.rawValue ?? "Music")" : audio.running ? "Music Sync active":"Audio off").font(.system(size:10,weight:.medium)).lineLimit(1)}.padding(.horizontal,11).padding(.vertical,8).background(.white.opacity(0.045),in:Capsule())
+        HStack(spacing:7){Circle().fill(audio.running ? .mint:.gray).frame(width:6,height:6);Text(music.playing ? "Playing · \(music.source?.rawValue ?? "Music")" : audio.running ? model.audioSource.rawValue : "Audio off").font(.system(size:10,weight:.medium)).lineLimit(1)}.padding(.horizontal,11).padding(.vertical,8).background(.white.opacity(0.045),in:Capsule())
     }
 }
 
@@ -53,7 +55,7 @@ private struct LightingPage:View {
                     VStack(spacing:16){
                         LightingPreview(model:model,audio:audio,music:music)
                         PlayerCard(model:model,music:music,audio:audio,lyrics:model.lyrics,motion:model.motionArt,compact:true)
-                        ConnectionCard(music:music)
+                        ConnectionCard(music:music,source:model.audioSource)
                     }.padding(.bottom,20)
                 }.frame(width:max(285,min(400,geometry.size.width*0.42))).scrollIndicators(.hidden)
                 ScrollView{
@@ -63,7 +65,7 @@ private struct LightingPage:View {
                                 Button{model.prefs.rimStyle=style}label:{HStack(spacing:6){Image(systemName:style.symbol).frame(width:14);Text(style.rawValue).lineLimit(1);Spacer(minLength:0)}.font(.system(size:10,weight:.medium)).padding(9).background(model.prefs.rimStyle==style ? .cyan.opacity(0.17):.white.opacity(0.035),in:RoundedRectangle(cornerRadius:8)).foregroundStyle(model.prefs.rimStyle==style ? .cyan:.secondary)}.buttonStyle(.plain)
                             }}
                             HStack{Text("Motion");Spacer();Picker("Motion",selection:$model.prefs.motion){ForEach(LightMotion.allCases,id:\.self){Text($0.rawValue).tag($0)}}.labelsHidden().frame(width:130)}.padding(.top,5)
-                            AudioControl(model:model,audio:audio)
+                            AudioControl(model:model,audio:audio,music:music)
                             ValueSlider(title:"Bass bounce",value:$model.prefs.bassBounce,range:0...2.5,unit:"×")
                             ValueSlider(title:"Flow speed",value:$model.prefs.animationSpeed,range:0.15...2,unit:"×")
                         }
@@ -118,17 +120,38 @@ struct ValueSlider:View{
     var body:some View{VStack(spacing:5){HStack{Text(title);Spacer();Text(unit=="pt" ? "\(Int(value)) pt":String(format:"%.1f×",value)).font(.system(size:10,design:.monospaced)).foregroundStyle(.secondary)};Slider(value:$value,in:range).controlSize(.small).tint(.cyan)}}
 }
 
-private struct AudioControl:View{
-    @ObservedObject var model:AppModel
-    @ObservedObject var audio:AudioCapture
-    var body:some View{
-        Group{
-            VStack(alignment:.leading,spacing:8){
-                HStack{Label(audio.running ? "Listening to Spotify only":"Spotify audio is off",systemImage:audio.running ? "waveform":"speaker.slash").font(.system(size:10));Spacer();Button(audio.running ? "Stop":"Enable"){if audio.running{model.syncRequested=false;audio.stop()}else{model.startSpotifyAudio()}}.controlSize(.mini)}
-                if !audio.running{Text(audio.status).font(.system(size:10)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)}
-                HStack(spacing:4){Meter(label:"BASS",value:audio.features.bass,color:.cyan);Meter(label:"MID",value:audio.features.mid,color:.purple);Meter(label:"AIR",value:audio.features.treble,color:.pink)}
-            }.padding(10).background(.black.opacity(0.2),in:RoundedRectangle(cornerRadius:10))
-        }
+private struct AudioControl: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var audio: AudioCapture
+    @ObservedObject var music: MusicWatcher
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label(model.audioSource.rawValue, systemImage: audio.running ? "waveform" : "speaker.slash").font(.system(size: 10))
+                Spacer()
+                if case .failed = audio.state { retry }
+                if case .permissionDenied = audio.state { retry }
+                Button(model.syncRequested ? "Stop" : "Enable") {
+                    if model.syncRequested { model.stopAudio() } else { model.startAudio() }
+                }.controlSize(.mini)
+            }
+            Text(audio.state.description(for: model.audioSource)).font(.system(size: 10))
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if model.audioSource == .appleMusic, music.playing, audio.running, audio.level <= 0.001 {
+                Text("Music is playing, but the tap is silent. Check the output device. macOS may restrict capture of some tracks.")
+                    .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 4) {
+                Meter(label: "BASS", value: audio.features.bass, color: .cyan)
+                Meter(label: "MID", value: audio.features.mid, color: .purple)
+                Meter(label: "AIR", value: audio.features.treble, color: .pink)
+            }
+        }.padding(10).background(.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var retry: some View {
+        Button("Retry") { model.startAudio() }.controlSize(.mini)
     }
 }
 private struct Meter:View{
@@ -136,14 +159,25 @@ private struct Meter:View{
     var body:some View{VStack(alignment:.leading,spacing:4){Text(label).font(.system(size:8,weight:.medium)).foregroundStyle(.secondary);GeometryReader{g in ZStack(alignment:.leading){Capsule().fill(.white.opacity(0.04));Capsule().fill(color.opacity(0.7)).frame(width:max(0,g.size.width*value))}}.frame(height:3)}.frame(maxWidth:.infinity)}
 }
 
-struct ConnectionCard:View{
-    @ObservedObject var music:MusicWatcher
-    var body:some View{
-        VStack(alignment:.leading,spacing:9){
-            HStack{Image(systemName:music.connected ? "checkmark.circle.fill":"link").foregroundStyle(music.connected ? .mint:.cyan);Text(music.connected ? "Music connected":"Music connection").font(.system(size:11,weight:.semibold));Spacer();Button(music.connected ? "Refresh":"Connect"){music.connect()}.controlSize(.small)}
-            Text(music.status).font(.system(size:10)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
-            if !music.connected{HStack{Button("Open Spotify"){music.open(.spotify)}}.controlSize(.mini)}
-        }.padding(14).background(.white.opacity(0.025),in:RoundedRectangle(cornerRadius:15))
+struct ConnectionCard: View {
+    @ObservedObject var music: MusicWatcher
+    let source: AudioSource
+
+    var body: some View {
+        if source.playerBundleID != nil {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack {
+                    Image(systemName: music.connected ? "checkmark.circle.fill" : "link").foregroundStyle(music.connected ? .mint : .cyan)
+                    Text(music.connected ? "Music connected" : "Music connection").font(.system(size: 11, weight: .semibold))
+                    Spacer()
+                    Button(music.connected ? "Refresh" : "Connect") { music.connect() }.controlSize(.small)
+                }
+                Text(music.status).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if !music.connected {
+                    Button(source == .appleMusic ? "Open Music" : "Open Spotify") { music.openSelectedPlayer() }.controlSize(.mini)
+                }
+            }.padding(14).background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 15))
+        }
     }
 }
 
@@ -211,12 +245,13 @@ struct LyricOptions:View{
 struct SettingsForm:View{
     @ObservedObject var model:AppModel
     @ObservedObject var music:MusicWatcher
+    @ObservedObject var audio:AudioCapture
     var body:some View{
         ScrollView{
             LazyVGrid(columns:[GridItem(.flexible()),GridItem(.flexible())],alignment:.leading,spacing:18){
                 StudioCard("ON LAUNCH"){
                     Toggle("Connect to music automatically",isOn:$model.prefs.autoConnect)
-                    Toggle("Start Spotify audio automatically",isOn:$model.prefs.autoSync)
+                    Toggle("Start audio capture automatically",isOn:$model.prefs.autoSync)
                     Toggle("Fetch lyrics automatically",isOn:$model.prefs.autoLyrics)
                     Text("Lyrics requests send the current track details to LRCLIB. Audio analysis stays on this Mac.").font(.caption).foregroundStyle(.secondary)
                 }
@@ -226,8 +261,12 @@ struct SettingsForm:View{
                     Toggle("Animated album artwork",isOn:$model.prefs.animatedArtwork)
                     TextField("Artwork region",text:$model.prefs.storefront)
                 }
-                StudioCard("CONNECTION"){
-                    ConnectionCard(music:music)
+                StudioCard("AUDIO SOURCE"){
+                    Picker("Audio Source",selection:Binding(get:{model.audioSource},set:{model.selectAudioSource($0)})){
+                        ForEach(AudioSource.allCases,id:\.self){source in Text(source.rawValue).tag(source)}
+                    }
+                    AudioControl(model:model,audio:audio,music:music)
+                    ConnectionCard(music:music,source:model.audioSource)
                     if music.crossfadeCorrection>0{Text(String(format:"Spotify crossfade: %.1f s · accounted for in lyric lookup",music.crossfadeCorrection)).font(.system(size:10)).foregroundStyle(.secondary)}
                     ForEach(music.diagnostics,id:\.self){Text($0).font(.system(size:10)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)}
                     Button("Open Privacy & Security"){NSWorkspace.shared.open(URL(string:"x-apple.systempreferences:com.apple.preference.security")!)}

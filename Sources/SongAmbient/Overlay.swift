@@ -54,7 +54,7 @@ struct RimView: View {
     var notchHeight: CGFloat = 0
     var miniature = false
     @State private var lastBeat = Date.distantPast
-    private var active: Bool { (model.prefs.enabled || model.preview) && !model.suspended && (miniature || model.preview || SpotifyAudioPolicy.shouldRender(playing:music.playing,connected:music.connected,spotifySource:music.source == .spotify,capturing:audio.running,level:audio.level)) }
+    private var active: Bool { (model.prefs.enabled || model.preview) && !model.suspended && (miniature || model.preview || model.lightingActive) }
     private var moving: Bool { active && (model.prefs.motion == .flow || model.prefs.motion == .music && audio.running && audio.level > 0.001) }
     var body: some View {
         if MTLCreateSystemDefaultDevice() != nil {

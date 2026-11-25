@@ -2,6 +2,8 @@ import AmbientCore
 import Foundation
 import Metal
 import AppKit
+import CoreAudio
+import Synchronization
 
 func verify(_ condition: @autoclosure () -> Bool, _ message: String) {
     guard condition() else { fatalError(message) }
@@ -102,6 +104,109 @@ verify(SpotifyTimingSettings.parseCrossfadeSeconds("audio.crossfade_v2=false\nau
 verify(SpotifyTimingSettings.parseCrossfadeSeconds("audio.crossfade=true\naudio.crossfade.time=2500")==2.5,"Legacy crossfade settings must retain millisecond precision")
 verify(SpotifyTimingSettings.parseCrossfadeSeconds("audio.crossfade_v2=true\naudio.crossfade.time_v2=nan")==0,"Malformed settings must not introduce guessed duration corrections")
 
+verify(AudioSource.restored(from: nil) == .spotify && AudioSource.restored(from: "invalid") == .spotify,
+       "Existing and invalid source preferences must default to Spotify")
+for source in AudioSource.allCases {
+    verify(AudioSource.restored(from: source.rawValue) == source, "Source selection must round-trip")
+}
+verify(AudioSource.appleMusic.includesProcess(bundleID: "com.apple.Music"), "Music must be included in its process tap")
+verify(AudioSource.appleMusic.includesProcess(bundleID: "com.apple.Music.helper"), "Music-specific helpers must be included")
+for bundleID in ["com.apple.Safari", "com.apple.MusicOther", "com.spotify.client", "com.apple.audio.MusicPlayback"] {
+    verify(!AudioSource.appleMusic.includesProcess(bundleID: bundleID), "Apple Music must be isolated from other apps")
+    verify(AudioSource.systemAudio.includesProcess(bundleID: bundleID), "System Audio must accept audio regardless of app")
+}
+for playing in [false, true] {
+    for connected in [false, true] {
+        for capturing in [false, true] {
+            for level in [0.0, 0.001, 0.2] {
+                let legacy = SpotifyAudioPolicy.shouldRender(playing: playing, connected: connected, spotifySource: true, capturing: capturing, level: level)
+                verify(AudioSource.spotify.shouldRender(playing: playing, connected: connected, capturing: capturing, level: level) == legacy,
+                       "The Spotify lighting gate must match the original")
+                for source in [AudioSource.systemAudio, .appleMusic] {
+                    verify(source.shouldRender(playing: playing, connected: connected, capturing: capturing, level: level) == (capturing && level > 0.001),
+                           "New audio sources must gate on captured PCM independently of metadata")
+                }
+            }
+        }
+    }
+}
+verify(AudioSource.systemAudio.playerBundleID == nil, "System Audio must not require a player")
+print("Passed source persistence, process isolation, and lighting gate checks.")
+
+let sampleRate = 48_000.0
+let referenceMono = tone(1250, 0.2, 0)
+let interleaved = referenceMono.enumerated().flatMap { index, value -> [Float] in
+    index.isMultiple(of: 2) ? [value, -value] : [0, value]
+}
+let recorded = Mutex<[AudioFeatures]>([])
+let pcm = PCMPipeline(sampleRate: sampleRate, frameCount: referenceMono.count) { features in
+    recorded.withLock { $0.append(features) }
+}
+interleaved.withUnsafeBytes { bytes in
+    var list = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer(
+        mNumberChannels: 2, mDataByteSize: UInt32(bytes.count), mData: UnsafeMutableRawPointer(mutating: bytes.baseAddress)
+    ))
+    pcm.process(&list, time: 1)
+}
+let received = recorded.withLock { $0.first! }
+var baselineEngine = BeatEngine()
+var baseline = baselineEngine.analyze(referenceMono, sampleRate: sampleRate, time: 1)
+// Reproduce the original Hann window and logarithmic bins with an independent DFT.
+let windowed: [Double] = (0..<512).map { index in
+    let sample = Double(referenceMono[index])
+    let phase: Double = 2.0 * Double.pi * Double(index) / 511.0
+    let cosine: Double = cos(phase)
+    let weight: Double = 0.5 - 0.5 * cosine
+    return sample * weight
+}
+for band in 0..<16 {
+    let lo = max(1, Int(pow(256.0, Double(band) / 16)))
+    let hi = min(255, max(lo + 1, Int(pow(256.0, Double(band + 1) / 16))))
+    let energy = (lo..<hi).map { bin -> Double in
+        var real = 0.0, imaginary = 0.0
+        for (index, sample) in windowed.enumerated() {
+            let phase = 2 * Double.pi * Double(bin * index) / 512
+            real += sample * cos(phase); imaginary += sample * sin(phase)
+        }
+        return hypot(real, imaginary)
+    }.max() ?? 0
+    baseline.bands[band] = min(1, log1p(energy * 2) / 4)
+}
+verify(timesEqual(received.bands, baseline.bands), "PCM must retain the original window, DFT bands, and magnitude scaling")
+baseline.bands = received.bands
+verify(received == baseline, "PCM must retain the original strongest-channel features from BeatEngine")
+let left = stride(from: 0, to: interleaved.count, by: 2).map { interleaved[$0] }
+let right = stride(from: 1, to: interleaved.count, by: 2).map { interleaved[$0] }
+let planarRecorded = Mutex<AudioFeatures?>(nil)
+let planarPCM = PCMPipeline(sampleRate: sampleRate, frameCount: 0) { features in
+    planarRecorded.withLock { $0 = features }
+}
+let planar = AudioBufferList.allocate(maximumBuffers: 2)
+defer { free(planar.unsafeMutablePointer) }
+left.withUnsafeBytes { leftBytes in
+    right.withUnsafeBytes { rightBytes in
+        planar[0] = AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(leftBytes.count), mData: UnsafeMutableRawPointer(mutating: leftBytes.baseAddress))
+        planar[1] = AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(rightBytes.count), mData: UnsafeMutableRawPointer(mutating: rightBytes.baseAddress))
+        planarPCM.process(planar.unsafePointer, time: 1)
+    }
+}
+verify(planarRecorded.withLock { $0 } == received, "Planar and interleaved PCM must yield identical renderer features")
+for tick in 2...30 { pcm.releaseIfStalled(at: 1 + Double(tick) / 10) }
+verify(recorded.withLock { $0.last?.level } == 0, "A stalled tap must decay all the way to silence")
+print("Passed PCM parity, planar stereo, and stalled-input release checks.")
+
+if CommandLine.arguments.contains("--spotify-route") || CommandLine.arguments.contains("--apple-music-route") {
+    let route: AudioSource = CommandLine.arguments.contains("--spotify-route") ? .spotify : .appleMusic
+    let selected = AudioProcessSelection.available(for: route)
+    print("\(route.rawValue) tap source count: \(selected.count)")
+    if route == .spotify { print("Configured crossfade lookup correction: \(SpotifyTimingSettings.crossfadeSeconds()) seconds") }
+    for source in selected { print("Selected process \(source.id): \(source.bundleID)") }
+}
+if CommandLine.arguments.contains("--allow-missing-metal"), MTLCreateSystemDefaultDevice() == nil {
+    print("GPU checks skipped because this host has no Metal device.")
+    exit(0)
+}
+
 guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { fatalError("No Metal device") }
 let library = try device.makeLibrary(source: PlasmaShader.source, options: nil)
 let descriptor = MTLRenderPipelineDescriptor()
@@ -149,9 +254,3 @@ verify(hashes.count==6,"All six effects must render distinct pixels")
 verify(coverage[9]!<coverage[1]!/3,"Minimal must stay a hairline while Aurora has broad light")
 verify(coverage[2]!<coverage[1]!/2,"Comet must remain a sparse traveling light, not another full band")
 print("Passed GPU rendering, transparency, and distinct silhouette checks for 6 effects on \(device.name).")
-if CommandLine.arguments.contains("--spotify-route"){
-    let selected=SpotifyProcessSelection.available()
-    print("Spotify tap source count: \(selected.count)")
-    print("Configured crossfade lookup correction: \(SpotifyTimingSettings.crossfadeSeconds()) seconds")
-    for source in selected{print("Selected process \(source.id): \(source.bundleID)")}
-}

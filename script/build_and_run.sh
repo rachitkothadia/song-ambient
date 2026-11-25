@@ -28,11 +28,11 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIconFile</key><string>SongAmbient</string>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
 <key>NSPrincipalClass</key><string>NSApplication</string>
-<key>NSAppleEventsUsageDescription</key><string>Song Ambient reads the current Spotify song and controls Spotify playback.</string>
-<key>NSAudioCaptureUsageDescription</key><string>Song Ambient analyzes only Spotify output audio to animate the border. Other apps and the microphone are excluded. Audio is never saved.</string>
+<key>NSAppleEventsUsageDescription</key><string>Song Ambient reads track information and controls playback in your selected player, Spotify or Music.</string>
+<key>NSAudioCaptureUsageDescription</key><string>Song Ambient analyzes the output of your selected audio source to animate the border. The microphone is never used. Audio is processed locally and never saved.</string>
 </dict></plist>
 PLIST
-/usr/bin/codesign --force --sign - "$APP_BUNDLE"
+/usr/bin/codesign --force --sign - --entitlements "$ROOT_DIR/script/SongAmbient.entitlements" "$APP_BUNDLE"
 case "$MODE" in
   --build) ;;
   run) /usr/bin/open -n "$APP_BUNDLE" ;;

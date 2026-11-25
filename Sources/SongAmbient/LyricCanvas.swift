@@ -30,7 +30,7 @@ struct LyricCanvas:View{
                 Canvas(rendersAsynchronously:true){context,size in renderer.draw(context:context,size:size)}
             }
             if lyrics.presentation.tokens.isEmpty && !model.lyricsDemo && !transparent{
-                VStack(spacing:14){OrbitMark().frame(width:42,height:42).foregroundStyle(.cyan);Text(lyrics.loading ? "Finding the words…":"Your song, in the stars.").font(.system(size:preview ? 18:30,weight:.light,design:.rounded));Text(lyrics.loading ? "Preparing word motion":"Play Spotify or import timed lyrics.").font(.system(size:preview ? 10:13)).foregroundStyle(.secondary)}
+                VStack(spacing:14){OrbitMark().frame(width:42,height:42).foregroundStyle(.cyan);Text(lyrics.loading ? "Finding the words…":"Your song, in the stars.").font(.system(size:preview ? 18:30,weight:.light,design:.rounded));Text(lyrics.loading ? "Preparing word motion":"Play a track in the selected music app or import timed lyrics.").font(.system(size:preview ? 10:13)).foregroundStyle(.secondary)}
             }
         }.frame(maxWidth:.infinity,maxHeight:.infinity).clipped().accessibilityElement(children:.ignore).accessibilityLabel(accessibilityWord)
     }

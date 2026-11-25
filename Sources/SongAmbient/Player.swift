@@ -70,12 +70,15 @@ struct PlayerCard: View {
                 } label: { cover.frame(width: compact ? 58 : 70, height: compact ? 58 : 70).clipShape(RoundedRectangle(cornerRadius: 12)) }
                 .buttonStyle(.plain).help("Show album artwork")
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(music.title).font(.system(size: compact ? 14 : 16, weight: .semibold)).lineLimit(1)
+                    Text(model.audioSource == .systemAudio ? model.audioSource.rawValue : music.title).font(.system(size: compact ? 14 : 16, weight: .semibold)).lineLimit(1)
                     Text(music.artist).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
-                    if !compact { Text("Spotify").font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary) }
+                    if model.audioSource == .appleMusic && !music.album.isEmpty {
+                        Text(music.album).font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary).lineLimit(1)
+                    }
+                    if !compact { Text(model.audioSource.rawValue).font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary) }
                 }
                 Spacer(minLength: 0)
-                BarsView(audio: audio, playing: music.playing).frame(width: 26, height: 22)
+                BarsView(audio: audio, playing: model.audioSource == .spotify ? music.playing : model.lightingActive).frame(width: 26, height: 22)
             }
             if expandedArtwork {
                 cover.frame(height: 240).clipShape(RoundedRectangle(cornerRadius: 16))
@@ -90,7 +93,11 @@ struct PlayerCard: View {
                 HStack {
                     Text(Self.timestamp(scrubbing ? scrub : music.position))
                     Spacer()
-                    Text("−" + Self.timestamp(max(0, music.duration - (scrubbing ? scrub : music.position))))
+                    if model.audioSource == .appleMusic {
+                        Text(Self.timestamp(music.duration)).accessibilityLabel("Track duration").accessibilityValue(Self.timestamp(music.duration))
+                    } else {
+                        Text("−" + Self.timestamp(max(0, music.duration - (scrubbing ? scrub : music.position))))
+                    }
                 }.font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
             }
             HStack(spacing: 25) {

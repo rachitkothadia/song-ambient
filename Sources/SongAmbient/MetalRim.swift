@@ -23,8 +23,7 @@ struct MetalRim: NSViewRepresentable {
     func updateNSView(_ view: MTKView, context: Context) {
         guard let renderer = context.coordinator else { return }
         let prefs = model.prefs
-        let spotifyActive=SpotifyAudioPolicy.shouldRender(playing:music.playing,connected:music.connected,spotifySource:music.source == .spotify,capturing:audio.running,level:audio.level)
-        renderer.active = (prefs.enabled || model.preview) && !model.suspended && (miniature || model.preview || spotifyActive)
+        renderer.active = (prefs.enabled || model.preview) && !model.suspended && (miniature || model.preview || model.lightingActive)
         if renderer.motion != prefs.motion {renderer.spring=BounceSpring()}
         renderer.motion = prefs.motion
         renderer.level = prefs.motion == .music ? audio.level : 0

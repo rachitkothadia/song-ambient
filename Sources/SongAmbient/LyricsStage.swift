@@ -33,7 +33,11 @@ struct LyricsStage:View {
         }.background(Color.black.ignoresSafeArea()).frame(minWidth:760,maxWidth:.infinity,minHeight:500,maxHeight:.infinity).preferredColorScheme(.dark)
             .background(WindowAttachment(role:.stage))
             .focusable().focused($stageFocused).focusEffectDisabled()
-            .onKeyPress(.space){music.command("playpause");return .handled}
+            .onKeyPress(.space) {
+                guard model.audioSource != .systemAudio else { return .ignored }
+                music.command("playpause")
+                return .handled
+            }
             .onKeyPress(.escape){WindowCoordinator.shared.exitFullScreen();return .handled}
             .onKeyPress("h"){chrome.toggle();return .handled}
             .onTapGesture(count:2){chrome.toggle()}
@@ -56,13 +60,15 @@ private struct StageTransport:View{
             if lyrics.loading{ProgressView().controlSize(.small)}
             if !lyrics.status.isEmpty && lyrics.words.isEmpty{Text(lyrics.status).font(.system(size:10)).foregroundStyle(.secondary).lineLimit(2).multilineTextAlignment(.center)}
             HStack(spacing:20){
-                Button{music.toggleShuffle()}label:{Image(systemName:"shuffle").foregroundStyle(music.shuffle ? .cyan:.secondary)}.help("Shuffle")
-                Button{music.command("previous track")}label:{Image(systemName:"backward.fill")}
-                Button{music.command("playpause")}label:{Image(systemName:music.playing ? "pause.fill":"play.fill").font(.system(size:22)).frame(width:26)}
-                Button{music.command("next track")}label:{Image(systemName:"forward.fill")}
-                Text(PlayerCard.timestamp(music.position)).font(.system(size:10,design:.monospaced)).foregroundStyle(.secondary)
-                Slider(value:Binding(get:{dragging ? drag:music.position},set:{drag=$0}),in:0...max(1,music.duration),onEditingChanged:{value in if value{drag=music.position};dragging=value;if !value{music.seek(drag)}}).tint(.white).frame(maxWidth:320)
-                Text(PlayerCard.timestamp(music.duration)).font(.system(size:10,design:.monospaced)).foregroundStyle(.secondary)
+                Group {
+                    Button{music.toggleShuffle()}label:{Image(systemName:"shuffle").foregroundStyle(music.shuffle ? .cyan:.secondary)}.help("Shuffle")
+                    Button{music.command("previous track")}label:{Image(systemName:"backward.fill")}
+                    Button{music.command("playpause")}label:{Image(systemName:music.playing ? "pause.fill":"play.fill").font(.system(size:22)).frame(width:26)}
+                    Button{music.command("next track")}label:{Image(systemName:"forward.fill")}
+                    Text(PlayerCard.timestamp(music.position)).font(.system(size:10,design:.monospaced)).foregroundStyle(.secondary)
+                    Slider(value:Binding(get:{dragging ? drag:music.position},set:{drag=$0}),in:0...max(1,music.duration),onEditingChanged:{value in if value{drag=music.position};dragging=value;if !value{music.seek(drag)}}).tint(.white).frame(maxWidth:320)
+                    Text(PlayerCard.timestamp(music.duration)).font(.system(size:10,design:.monospaced)).foregroundStyle(.secondary)
+                }.disabled(model.audioSource == .systemAudio)
                 Button{lyrics.importFile(for:music)}label:{Image(systemName:"square.and.arrow.down")}.help("Import timed lyrics")
                 Button{lyrics.load(music:music,force:true)}label:{Image(systemName:"arrow.clockwise")}.help("Refresh lyrics")
             }.buttonStyle(.plain).controlSize(.small)

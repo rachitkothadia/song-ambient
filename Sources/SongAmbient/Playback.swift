@@ -3,11 +3,6 @@ import Foundation
 import Combine
 import AmbientCore
 
-enum MusicSource: String, CaseIterable, Hashable, Sendable {
-    case spotify = "Spotify"
-    var bundleID: String { "com.spotify.client" }
-}
-
 @MainActor final class MusicWatcher: ObservableObject {
     @Published private(set) var title = "Nothing playing"
     @Published private(set) var artist = "Play a song in Spotify"
@@ -19,7 +14,7 @@ enum MusicSource: String, CaseIterable, Hashable, Sendable {
     @Published private(set) var crossfadeCorrection = 0.0
     @Published private(set) var position = 0.0
     @Published private(set) var identity = ""
-    @Published private(set) var source: MusicSource?
+    @Published private(set) var source: AudioSource?
     @Published private(set) var status = "Waiting to connect"
     @Published private(set) var connected = false
     @Published private(set) var monitoring = false
@@ -31,12 +26,32 @@ enum MusicSource: String, CaseIterable, Hashable, Sendable {
     private var timer: Timer?
     private var anchor = Date(), anchorPosition = 0.0
     private var polling = false
-    private var denied = Set<MusicSource>()
+    private var selected = AudioSource.spotify
+    private var generation = 0
+    private var denied = false
+    private var artworkRequestID: String?
     private var artworkTask: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
 
+    func select(_ source: AudioSource, connect shouldConnect: Bool) {
+        guard selected != source else {
+            if shouldConnect { connect() }
+            return
+        }
+        selected = source; generation += 1; polling = false; denied = false
+        monitoring = false
+        timer?.invalidate(); timer = nil
+        for observer in observers { DistributedNotificationCenter.default().removeObserver(observer) }
+        observers = []
+        clearTrack()
+        diagnostics = []
+        status = source == .systemAudio ? "System output supplies audio for lighting." : "Waiting to connect"
+        if shouldConnect { connect() }
+    }
+
     func connect() {
-        monitoring = true; denied = []; status = "Checking Spotify…"
+        guard let bundleID = selected.playerBundleID else { return }
+        monitoring = true; denied = false; status = "Checking \(selected.rawValue)…"
         poll()
         if timer == nil {
             timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -45,8 +60,11 @@ enum MusicSource: String, CaseIterable, Hashable, Sendable {
                     self.position = self.currentTime(at: Date()); self.poll()
                 }
             }
-            for name in ["com.spotify.client.PlaybackStateChanged"] {
-                observers.append(DistributedNotificationCenter.default().addObserver(forName: .init(name), object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.poll() } })
+            if selected == .spotify {
+                let observer = DistributedNotificationCenter.default().addObserver(
+                    forName: .init("\(bundleID).PlaybackStateChanged"), object: nil, queue: .main
+                ) { [weak self] _ in Task { @MainActor in self?.poll() } }
+                observers.append(observer)
             }
         }
     }
@@ -57,42 +75,82 @@ enum MusicSource: String, CaseIterable, Hashable, Sendable {
     }
 
     private func poll() {
-        guard monitoring, !polling else { return }
-        let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
-        let candidates = MusicSource.allCases.filter { running.contains($0.bundleID) && !denied.contains($0) }
-        guard !candidates.isEmpty else {
-            if denied.isEmpty {
-                connected = false; playing = false
-                status = "Open Spotify desktop. Other apps never drive the lights."
-                diagnostics = MusicSource.allCases.map { "\($0.rawValue): \(running.contains($0.bundleID) ? "running" : "not running")" }
+        guard monitoring, !polling, let bundleID = selected.playerBundleID else { return }
+        let player = selected
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else {
+            if player == .appleMusic { clearTrack() }
+            if connected { connected = false }
+            if playing { playing = false }
+            let message = "Open \(player == .appleMusic ? "Music" : "Spotify desktop")."
+            if status != message {
+                status = message
+                diagnostics = ["\(player.rawValue): not running"]
+            }
+            return
+        }
+        guard !denied else {
+            if status != automationDeniedMessage {
+                status = automationDeniedMessage
+                diagnostics = [status]
             }
             return
         }
         polling = true
+        let generation = self.generation
+        let pid = app.processIdentifier
         queue.async { [weak self, bridge] in
-            let results = candidates.map { ($0, bridge.read($0)) }
+            let result = bridge.read(player)
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.generation == generation else { return }
                 self.polling = false
-                var snapshots: [TrackSnapshot] = [], details: [String] = []
-                for (source,result) in results {
-                    switch result {
-                    case .track(let track): snapshots.append(track); details.append("\(source.rawValue): reading playback")
-                    case .empty: details.append("\(source.rawValue): no accessible current track")
-                    case .failure(let code, let message):
-                        if code == -1743 { self.denied.insert(source) }
-                        details.append("\(source.rawValue): \(code == -1743 ? "Automation permission denied. Allow it in Privacy & Security → Automation, then Retry." : "\(message) (\(code))")")
-                    }
-                }
-                self.diagnostics = details
-                if let track = snapshots.first(where: \.playing) ?? snapshots.first(where: { $0.source == self.source }) ?? snapshots.first {
+                guard NSRunningApplication(processIdentifier: pid)?.isTerminated == false else { return }
+                switch result {
+                case .track(let track):
+                    self.diagnostics = ["\(player.rawValue): reading playback"]
                     self.apply(track)
-                } else {
+                case .empty:
+                    if player == .appleMusic { self.clearTrack(keepingControlsFor: player) }
                     self.connected = false; self.playing = false
-                    self.status = details.first ?? "Waiting for a track"
+                    self.status = "\(player.rawValue): no accessible current track"
+                    self.diagnostics = [self.status]
+                case .failure(let code, let message):
+                    if player == .appleMusic { self.clearTrack() }
+                    self.denied = code == -1743
+                    self.connected = false; self.playing = false
+                    self.status = self.denied ? self.automationDeniedMessage : "\(message) (\(code))"
+                    self.diagnostics = ["\(player.rawValue): \(self.status)"]
                 }
             }
         }
+    }
+
+    private var automationDeniedMessage: String {
+        "Automation permission denied. Allow \(selected.rawValue) in Privacy & Security → Automation, then Connect."
+    }
+
+    private func clearTrack(keepingControlsFor player: AudioSource? = nil) {
+        if !identity.isEmpty { identity = "" }
+        if artwork != nil { artwork = nil }
+        artworkTask?.cancel(); artworkTask = nil; artworkRequestID = nil
+        let prompt: String
+        switch selected {
+        case .systemAudio: prompt = "Play audio in any app"
+        case .appleMusic: prompt = "Play a song in Music"
+        case .spotify: prompt = "Play a song in Spotify"
+        }
+        if artist != prompt { artist = prompt }
+        if title != "Nothing playing" { title = "Nothing playing" }
+        if !album.isEmpty { album = "" }
+        if playing { playing = false }
+        if connected { connected = false }
+        if source != player { source = player }
+        if duration != 0 { duration = 0 }
+        if catalogDuration != 0 { catalogDuration = 0 }
+        if crossfadeCorrection != 0 { crossfadeCorrection = 0 }
+        if position != 0 { position = 0 }
+        if shuffle { shuffle = false }
+        if volume != 100 { volume = 100 }
+        anchorPosition = 0; anchor = Date()
     }
 
     private func apply(_ track: TrackSnapshot) {
@@ -104,53 +162,85 @@ enum MusicSource: String, CaseIterable, Hashable, Sendable {
         status = "\(track.source.rawValue) · \(track.playing ? "Playing" : "Paused")"
         let nextID = "\(track.source.rawValue)|\(track.id)|\(track.title)|\(track.artist)|\(track.album)"
         guard identity != nextID else { return }
-        identity = nextID; artwork = nil; artworkTask?.cancel()
-        if let url = URL(string: track.artworkURL), url.scheme == "https" {
+        identity = nextID; artwork = nil; artworkTask?.cancel(); artworkRequestID = nil
+        if track.source == .appleMusic {
+            loadMusicArtwork(for: track, identity: nextID)
+        } else if let url = URL(string: track.artworkURL), url.scheme == "https" {
             artworkTask = Task {
                 if let (data,_) = try? await URLSession.shared.data(from: url), !Task.isCancelled, identity == nextID { artwork = NSImage(data: data) }
             }
         }
     }
 
+    private func loadMusicArtwork(for track: TrackSnapshot, identity: String) {
+        let requestID = UUID().uuidString
+        artworkRequestID = requestID
+        queue.async { [weak self, bridge] in
+            let data = bridge.musicArtwork(for: track)
+            Task { @MainActor in
+                guard let self, self.artworkRequestID == requestID, self.identity == identity, let data else { return }
+                self.artwork = NSImage(data: data)
+            }
+        }
+    }
+
     func command(_ command: String) {
-        guard let source else { return }
+        guard let source, let bundleID = source.playerBundleID,
+              !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty else { return }
+        let generation = self.generation
         queue.async { [weak self, bridge] in
             let error = bridge.command(command, source: source)
-            Task { @MainActor in if let error { self?.status = error }; self?.poll() }
+            Task { @MainActor in
+                guard let self, self.generation == generation else { return }
+                if let error { self.status = error }
+                self.poll()
+            }
         }
     }
     func seek(_ seconds: Double) {
         let value = max(0,min(duration,seconds)); anchorPosition = value; anchor = Date(); position = value
         command("set player position to \(String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), value))")
     }
-    func toggleShuffle() { command("set shuffling to \(shuffle ? "false" : "true")") }
+    func toggleShuffle() {
+        let property = selected == .appleMusic ? "shuffle enabled" : "shuffling"
+        command("set \(property) to \(shuffle ? "false" : "true")")
+    }
     func setVolume(_ value: Double) { volume = value; command("set sound volume to \(Int(value))") }
-    func open(_ source: MusicSource) {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: source.bundleID) else { status = "\(source.rawValue) is not installed"; return }
-        NSWorkspace.shared.openApplication(at: url, configuration: .init()) { [weak self] _,_ in Task { @MainActor in self?.connect() } }
+    func openSelectedPlayer() {
+        let source = selected
+        guard let bundleID = source.playerBundleID else { return }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { status = "\(source.rawValue) is not installed"; return }
+        NSWorkspace.shared.openApplication(at: url, configuration: .init()) { [weak self] _,_ in
+            Task { @MainActor in
+                guard let self, self.selected == source else { return }
+                self.connect()
+            }
+        }
     }
 }
 
 private struct TrackSnapshot: Sendable {
-    let source: MusicSource
+    let source: AudioSource
     let title: String, artist: String, album: String, artworkURL: String, id: String
     let duration: Double, position: Double, volume: Double
     let crossfade:Double
     let playing: Bool, shuffle: Bool
 }
-private enum PlaybackRead { case track(TrackSnapshot), empty, failure(Int,String) }
+private enum PlaybackRead: Sendable { case track(TrackSnapshot), empty, failure(Int,String) }
 
 // Accessed exclusively by the playback queue. No existence event is sent to
 // Spotify: its shipping scripting dictionary doesn't implement that command.
 private final class AppleEventBridge: @unchecked Sendable {
-    private var scripts: [MusicSource:NSAppleScript] = [:]
+    private var scripts: [AudioSource:NSAppleScript] = [:]
+    private var artworkScript: NSAppleScript?
     private var crossfade=0.0,lastTimingRead=Date.distantPast
-    func read(_ source: MusicSource) -> PlaybackRead {
+    func read(_ source: AudioSource) -> PlaybackRead {
+        guard let bundleID = source.playerBundleID else { return .empty }
         var error: NSDictionary?
         let script: NSAppleScript
         if let cached = scripts[source] { script = cached }
         else {
-            guard let new = NSAppleScript(source: Self.script(source)), new.compileAndReturnError(&error) else { return failure(error) }
+            guard let new = NSAppleScript(source: Self.script(source, bundleID: bundleID)), new.compileAndReturnError(&error) else { return failure(error) }
             scripts[source] = new; script = new
         }
         let result = script.executeAndReturnError(&error)
@@ -161,24 +251,77 @@ private final class AppleEventBridge: @unchecked Sendable {
         }
         guard result.numberOfItems >= 10, let name = result.atIndex(1)?.stringValue, !name.isEmpty, name != "missing value" else { return .empty }
         let rawDuration = result.atIndex(4)?.doubleValue ?? 0
-        let duration = rawDuration / 1000
-        if Date().timeIntervalSince(lastTimingRead)>30{crossfade=SpotifyTimingSettings.crossfadeSeconds();lastTimingRead=Date()}
-        return .track(TrackSnapshot(source: source, title: name, artist: result.atIndex(2)?.stringValue ?? "", album: result.atIndex(3)?.stringValue ?? "", artworkURL: result.atIndex(7)?.stringValue ?? "", id: result.atIndex(8)?.stringValue ?? name, duration: duration, position: result.atIndex(5)?.doubleValue ?? 0, volume: result.atIndex(10)?.doubleValue ?? 100, crossfade:crossfade, playing: result.atIndex(6)?.booleanValue ?? false, shuffle: result.atIndex(9)?.booleanValue ?? false))
+        let duration = source == .spotify ? rawDuration / 1000 : rawDuration
+        if source == .spotify, Date().timeIntervalSince(lastTimingRead) > 30 {
+            crossfade = SpotifyTimingSettings.crossfadeSeconds(); lastTimingRead = Date()
+        }
+        return .track(TrackSnapshot(source: source, title: name, artist: result.atIndex(2)?.stringValue ?? "", album: result.atIndex(3)?.stringValue ?? "", artworkURL: result.atIndex(7)?.stringValue ?? "", id: result.atIndex(8)?.stringValue ?? name, duration: duration, position: result.atIndex(5)?.doubleValue ?? 0, volume: result.atIndex(10)?.doubleValue ?? 100, crossfade:source == .spotify ? crossfade : 0, playing: result.atIndex(6)?.booleanValue ?? false, shuffle: result.atIndex(9)?.booleanValue ?? false))
     }
-    func command(_ command: String, source: MusicSource) -> String? {
+    func musicArtwork(for track: TrackSnapshot) -> Data? {
         var error: NSDictionary?
-        NSAppleScript(source: "with timeout of 5 seconds\ntell application id \"\(source.bundleID)\" to \(command)\nend timeout")?.executeAndReturnError(&error)
+        if artworkScript == nil {
+            let script = NSAppleScript(source: """
+            if application id "com.apple.Music" is not running then return {}
+            with timeout of 3 seconds
+              tell application id "com.apple.Music"
+                set t to current track
+                set trackID to ""
+                set trackArtist to ""
+                set trackAlbum to ""
+                try
+                  set trackID to persistent ID of t as text
+                end try
+                try
+                  set trackArtist to artist of t as text
+                end try
+                try
+                  set trackAlbum to album of t as text
+                end try
+                set trackArt to missing value
+                try
+                  set trackArt to raw data of artwork 1 of t
+                end try
+                return {name of t as text, trackArtist, trackAlbum, trackID, trackArt}
+              end tell
+            end timeout
+            """)
+            guard script?.compileAndReturnError(&error) == true else { return nil }
+            artworkScript = script
+        }
+        guard let result = artworkScript?.executeAndReturnError(&error), error == nil,
+              result.atIndex(1)?.stringValue == track.title,
+              result.atIndex(2)?.stringValue == track.artist,
+              result.atIndex(3)?.stringValue == track.album,
+              result.atIndex(4)?.stringValue == track.id else { return nil }
+        return result.atIndex(5)?.data
+    }
+
+    func command(_ command: String, source: AudioSource) -> String? {
+        guard let bundleID = source.playerBundleID else { return nil }
+        var error: NSDictionary?
+        NSAppleScript(source: """
+        if application id "\(bundleID)" is not running then return
+        with timeout of 5 seconds
+          tell application id "\(bundleID)" to \(command)
+        end timeout
+        """)?.executeAndReturnError(&error)
         return error.map { "\(source.rawValue): \($0[NSAppleScript.errorMessage] as? String ?? "Playback command failed")" }
     }
     private func failure(_ error: NSDictionary?) -> PlaybackRead {
         .failure(error?[NSAppleScript.errorNumber] as? Int ?? 0,String((error?[NSAppleScript.errorMessage] as? String ?? "Cannot read playback").prefix(200)))
     }
-    private static func script(_ source: MusicSource) -> String {
-        let art = "artwork url of t", id = "id of t"
-        let shuffle = "shuffling"
+    private static func script(_ source: AudioSource, bundleID: String) -> String {
+        let readArtwork = source == .spotify ? """
+            try
+              set trackArt to artwork url of t
+            end try
+        """ : ""
+        let id = source == .spotify ? "id of t" : "persistent ID of t"
+        let shuffle = source == .spotify ? "shuffling" : "shuffle enabled"
         return """
+        if application id "\(bundleID)" is not running then return {}
         with timeout of 8 seconds
-          tell application id "\(source.bundleID)"
+          tell application id "\(bundleID)"
             set t to current track
             set trackTitle to name of t as text
             set trackArtist to ""
@@ -192,9 +335,7 @@ private final class AppleEventBridge: @unchecked Sendable {
             try
               set trackAlbum to album of t as text
             end try
-            try
-              set trackArt to \(art)
-            end try
+            \(readArtwork)
             try
               set trackID to \(id) as text
             end try

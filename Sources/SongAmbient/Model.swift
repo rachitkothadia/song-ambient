@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Combine
+import AmbientCore
 
 enum LightMotion: String, CaseIterable, Codable {
     case steady = "Steady", flow = "Flow", music = "Music Sync"
@@ -61,7 +62,8 @@ struct Preferences: Codable, Equatable {
     @Published var suspended = false
     @Published var screens: [NSScreen] = NSScreen.screens
     @Published var palette: [Color] = [.pink, .indigo]
-    @Published var syncRequested = false
+    @Published private(set) var syncRequested = false
+    @Published private(set) var audioSource: AudioSource
     @Published var selectedTab = StudioTab.lighting
     @Published var stageVisible = false
     @Published var lyricsDemo = false
@@ -76,7 +78,6 @@ struct Preferences: Codable, Equatable {
     private var tokens = Set<AnyCancellable>()
     private var observers: [NSObjectProtocol] = []
     private var previewTask: Task<Void, Never>?
-    private var resumeAudioAfterSleep = false
     private var started = false
 
     init() {
@@ -86,6 +87,8 @@ struct Preferences: Codable, Equatable {
             UserDefaults.standard.set(true, forKey: "defaults.v2")
         }
         prefs = restored
+        audioSource = AudioSource.restored(from: UserDefaults.standard.string(forKey: "audioSource"))
+        music.select(audioSource, connect: false)
         if let data=try? JSONEncoder().encode(restored){UserDefaults.standard.set(data,forKey:"preferences.v1")}
         WindowCoordinator.shared.onStageVisibility={[weak self] visible in self?.stageVisible=visible}
         $prefs.map(\.keepAwake).removeDuplicates().sink{WindowCoordinator.shared.setKeepStageAwake($0)}.store(in:&tokens)
@@ -101,7 +104,6 @@ struct Preferences: Codable, Equatable {
         observers.append(center.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.resumeAudioAfterSleep = self.syncRequested && self.audio.running
                 self.suspended = true; self.audio.stop()
             }
         })
@@ -109,13 +111,14 @@ struct Preferences: Codable, Equatable {
             Task { @MainActor in
                 guard let self else { return }
                 self.suspended = false
-                if self.resumeAudioAfterSleep { self.audio.start() }
+                if self.syncRequested { self.audio.start(self.audioSource) }
             }
         })
     }
 
     var colors: [Color] {
-        let base = prefs.overrideColor ? [Color(hex: prefs.primary), Color(hex: prefs.secondary)] : palette
+        let usesCustom = prefs.overrideColor || audioSource == .systemAudio || (audioSource == .appleMusic && music.artwork == nil)
+        let base = usesCustom ? [Color(hex: prefs.primary), Color(hex: prefs.secondary)] : palette
         let first = base[0].opacity(prefs.primaryBrightness)
         let second = base[min(1, base.count - 1)].opacity(prefs.secondaryBrightness)
         return prefs.gradient == 1 ? [first, first] : [first, second, first]
@@ -130,7 +133,7 @@ struct Preferences: Codable, Equatable {
         if prefs.showPlayer { player?.showPreview() }
         if !ProcessInfo.processInfo.arguments.contains("--test-ui") {
             if prefs.autoConnect { music.connect() }
-            if prefs.autoSync { startSpotifyAudio() }
+            if prefs.autoSync { startAudio() }
         }
     }
 
@@ -146,12 +149,31 @@ struct Preferences: Codable, Equatable {
 
     func startMusicSync() {
         prefs.motion = .music
-        startSpotifyAudio()
+        startAudio()
     }
-    func startSpotifyAudio() {
+
+    func selectAudioSource(_ source: AudioSource) {
+        guard audioSource != source else { return }
+        audioSource = source
+        UserDefaults.standard.set(source.rawValue, forKey: "audioSource")
+        music.select(source, connect: prefs.autoConnect || (source == .spotify && syncRequested))
+        if syncRequested && !suspended { audio.start(source) }
+    }
+
+    func startAudio() {
         syncRequested = true
-        if !music.monitoring { music.connect() }
-        audio.start()
+        if audioSource == .spotify && !music.monitoring { music.connect() }
+        if !suspended { audio.start(audioSource) }
+    }
+
+    func stopAudio() {
+        syncRequested = false
+        audio.stop()
+    }
+
+    var lightingActive: Bool {
+        audioSource.shouldRender(playing: music.playing, connected: music.connected && music.source == audioSource,
+                                 capturing: audio.running, level: audio.level)
     }
 }
 
